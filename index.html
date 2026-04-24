@@ -305,6 +305,37 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
         <button class="btn btn-red btn-sm" onclick="clearAllData()">🗑 Clear All Data</button>
       </div>
     </div>
+
+    <!-- TEST PANEL -->
+    <div class="settings-card" style="margin-top:16px;">
+      <div class="settings-title">🧪 Test Panel</div>
+      <div class="settings-desc">Fire fake scenarios on a real task to test the full flow — Discord webhook, activity log, status updates — without waiting for actual stock.</div>
+      <div class="form-group">
+        <label class="form-label">Pick a Task to Test</label>
+        <select class="form-select" id="test-task-select"><option value="">— Select a task —</option></select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:4px;">
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center;">
+          <div style="font-size:20px;margin-bottom:6px;">🛒</div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:4px;">In Stock</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:12px;">Item found, bot attempting cart</div>
+          <button class="btn btn-ghost btn-sm" style="width:100%;" onclick="runTest('instock')">Fire</button>
+        </div>
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center;">
+          <div style="font-size:20px;margin-bottom:6px;">✅</div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:4px;">Checkout Success</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:12px;">Full checkout completed</div>
+          <button class="btn btn-green btn-sm" style="width:100%;" onclick="runTest('checkout')">Fire</button>
+        </div>
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center;">
+          <div style="font-size:20px;margin-bottom:6px;">❌</div>
+          <div style="font-size:12px;font-weight:700;margin-bottom:4px;">Task Error</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:12px;">Error occurred, bot retries</div>
+          <button class="btn btn-red btn-sm" style="width:100%;" onclick="runTest('error')">Fire</button>
+        </div>
+      </div>
+      <div id="test-result" style="margin-top:14px;font-family:var(--font-mono);font-size:11px;color:var(--muted);display:none;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;"></div>
+    </div>
   </div>
 
   <!-- ACTIVITY -->
@@ -1029,6 +1060,58 @@ function updateSettingsStats(){
   document.getElementById('s-tasks').textContent=tasks.length;
   document.getElementById('s-profiles').textContent=profiles.length;
   document.getElementById('s-logs').textContent=logs.length;
+  // Refresh test task dropdown
+  const sel=document.getElementById('test-task-select');
+  sel.innerHTML='<option value="">— Select a task —</option>';
+  tasks.forEach(t=>{
+    const o=document.createElement('option');
+    o.value=t.id;
+    o.textContent=`${t.name} · ${storeLabel(t.store)}`;
+    sel.appendChild(o);
+  });
+}
+
+async function runTest(type){
+  const taskId=document.getElementById('test-task-select').value;
+  if(!taskId){alert('Pick a task first!');return;}
+  const task=tasks.find(t=>t.id==taskId);
+  if(!task){alert('Task not found.');return;}
+  const profile=profiles.find(p=>p.id==task.profileId)||null;
+  const result=document.getElementById('test-result');
+  result.style.display='block';
+
+  const labels={instock:'🛒 In Stock',checkout:'✅ Checkout Success',error:'❌ Task Error'};
+  result.textContent=`Firing "${labels[type]}" for "${task.name}"...`;
+
+  // Fire all the same things the real bot would do
+  if(type==='instock'){
+    task.status='carted';
+    addLog(storeLabel(task.store),task.store,`[TEST] 🛒 IN STOCK! Carting "${task.name}"...`,'lc-yellow');
+    showToast('Test: In Stock!',`${task.name} · ${storeLabel(task.store)}`);
+    await sendWebhook('instock',task,profile);
+    renderTasks();save();
+    result.textContent=`✅ Fired "In Stock" — task status set to Carted, log updated${webhookConfig.url?', Discord message sent':''}. Task stays carted so you can fire Checkout or Error next.`;
+    result.style.color='var(--yellow)';
+  } else if(type==='checkout'){
+    const prev=task.status;
+    task.status='checkout';
+    stats.checkouts++;
+    addLog(storeLabel(task.store),task.store,`[TEST] ✅ CHECKOUT SUCCESS — "${task.name}" | ${profile?profile.name:'No Profile'}`,'lc-green');
+    showToast('Test: Checkout Success!',`${task.name} · ${storeLabel(task.store)}`);
+    await sendWebhook('checkout',task,profile);
+    renderTasks();updateCounts();save();
+    result.textContent=`✅ Fired "Checkout Success" — status set to Checked Out${webhookConfig.url?', Discord message sent (with card/address if profile attached)':''}. Reset task to Idle to run again.`;
+    result.style.color='var(--green)';
+  } else if(type==='error'){
+    task.status='error';
+    stats.errors++;
+    addLog(storeLabel(task.store),task.store,`[TEST] ❌ Error on "${task.name}" — would retry in real run`,'lc-red');
+    showToast('Test: Error',`${task.name} · ${storeLabel(task.store)}`);
+    await sendWebhook('error',task,profile);
+    renderTasks();updateCounts();save();
+    result.textContent=`✅ Fired "Task Error" — status set to Error${webhookConfig.url?', Discord message sent':''}. In a real run the bot would auto-retry.`;
+    result.style.color='var(--red)';
+  }
 }
 function clearAllData(){
   if(!confirm('Delete ALL tasks, profiles, and logs?'))return;
