@@ -296,6 +296,8 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
           <div id="proxy-status" class="webhook-status ws-none">🔴 Proxy Offline</div>
         </div>
       </div>
+      <div class="settings-card">
+        <div class="settings-title">💾 Data & Storage</div>
         <div class="settings-desc">All data is auto-saved in your browser and persists across sessions — even if you close the tab and come back weeks later.</div>
         <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;line-height:2;">
           Tasks: <span id="s-tasks" style="color:var(--accent)">0</span> &nbsp;·&nbsp;
@@ -830,32 +832,28 @@ function testWebhook(){
   sendDiscord(url,{embeds:[{title:'🤖 NOVA AIO — Test Ping',description:'Your webhook is working!',color:7097343,footer:{text:'NOVA AIO Bot'},timestamp:new Date().toISOString()}]})
     .then(()=>showToast('Test Sent','Check your Discord channel'));
 }
-function sendWebhook(type,task,profile){
+async function sendWebhook(type,task,profile){
   if(!webhookConfig.url)return;
   if(type==='instock'&&!webhookConfig.instock)return;
   if(type==='checkout'&&!webhookConfig.checkout)return;
   if(type==='error'&&!webhookConfig.error)return;
-  const colors={instock:16766720,checkout:52429,error:16729147,status:7097343};
-  const titles={instock:'🛒 Item In Stock — Attempting Checkout!',checkout:'✅ Checkout Success!',error:'❌ Task Error'};
 
-  // Build live tasks summary
+  const colors={instock:16766720,checkout:52429,error:16729147};
+  const titles={instock:'🛒 Item In Stock — Attempting Checkout!',checkout:'✅ Checkout Success!',error:'❌ Task Error'};
   const running=tasks.filter(t=>t.status==='running'||t.status==='carted');
-  const liveLines=running.length
-    ? running.map(t=>`• **${t.name}** on ${storeLabel(t.store)} — ${t.checks} checks`).join('\n')
-    : '_No tasks currently running_';
+  const liveLines=running.length?running.map(t=>`• **${t.name}** on ${storeLabel(t.store)} — ${t.checks} checks`).join('\n'):'_No tasks currently running_';
+
+  const checkoutDetails=(()=>{
+    if(type!=='checkout'||!profile)return '';
+    const last3=profile.card.num?profile.card.num.replace(/\s/g,'').slice(-3):'???';
+    const a=profile.addr;
+    return `\n\n**💳 Card:** ${profile.name} · ending \`${last3}\`\n**📦 Ship to:** ${a.addr1}${a.addr2?' '+a.addr2:''}, ${a.city}, ${a.state} ${a.zip}`;
+  })();
 
   const descs={
     instock:`Bot detected **${task.name}** in stock on **${storeLabel(task.store)}** and is attempting to purchase it now.\n\n**🤖 Currently Monitoring:**\n${liveLines}`,
-    checkout:(()=>{
-      let details='';
-      if(profile){
-        const last3=profile.card.num?profile.card.num.replace(/\s/g,'').slice(-3):'???';
-        const a=profile.addr;
-        details=`\n\n**💳 Card:** ${profile.name} · ending \`${last3}\`\n**📦 Ship to:** ${a.addr1}${a.addr2?' '+a.addr2:''}, ${a.city}, ${a.state} ${a.zip}`;
-      }
-      return `Successfully purchased **${task.name}** on **${storeLabel(task.store)}**.${details}\n\n**🤖 Still Monitoring:**\n${liveLines}`;
-    })(),
-    error:`Error occurred while monitoring **${task.name}** on **${storeLabel(task.store)}** — bot will retry automatically.\n\n**🤖 Currently Monitoring:**\n${liveLines}`
+    checkout:`Successfully purchased **${task.name}** on **${storeLabel(task.store)}**.${checkoutDetails}\n\n**🤖 Still Monitoring:**\n${liveLines}`,
+    error:`Error on **${task.name}** at **${storeLabel(task.store)}** — retrying automatically.\n\n**🤖 Currently Monitoring:**\n${liveLines}`
   };
 
   const fields=[
@@ -873,45 +871,56 @@ function sendWebhook(type,task,profile){
     fields.push({name:'💳 Card Used',value:`${profile.name} · ending \`${last3}\``,inline:true});
     fields.push({name:'📬 Ship To',value:`${a.addr1}${a.addr2?' '+a.addr2:''}, ${a.city}, ${a.state} ${a.zip}`,inline:true});
   }
+
   const embed={
     title:titles[type],
     description:descs[type],
     color:colors[type],
     fields,
-    footer:{text:`NOVA AIO · ${tasks.length} total task${tasks.length!==1?'s':''} · ${running.length} running`},
+    footer:{text:`NOVA AIO · ${tasks.length} task${tasks.length!==1?'s':''} · ${running.length} running`},
     timestamp:new Date().toISOString()
   };
   if(task.imgData&&task.imgData.startsWith('http'))embed.thumbnail={url:task.imgData};
-  sendDiscord(webhookConfig.url,{embeds:[embed]});
+
+  const existingId=taskMessageIds[task.id];
+  const msgId=await sendDiscord(webhookConfig.url,{embeds:[embed]},existingId||null);
+  if(msgId)taskMessageIds[task.id]=msgId;
 }
 
-// Send a status update to Discord every 100 checks on a task
 // Each task gets one Discord message, edited in place
-const taskMessageIds = {}; // taskId -> discord message id
+const taskMessageIds = {};
 
 async function sendDiscord(url, payload, messageId=null){
   try{
     if(messageId){
-      // Edit existing message
-      const webhookId = url.split('/')[6];
-      const webhookToken = url.split('/')[7];
-      await fetch(`https://discord.com/api/webhooks/${webhookId}/${webhookToken}/messages/${messageId}`,{
+      const parts=url.split('/');
+      const webhookId=parts[6];
+      const webhookToken=parts[7]?parts[7].split('?')[0]:'';
+      const res=await fetch(`https://discord.com/api/webhooks/${webhookId}/${webhookToken}/messages/${messageId}`,{
         method:'PATCH',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify(payload)
       });
+      if(!res.ok){
+        // Message was deleted or not found — send a fresh one
+        const msgRes=await fetch(url+'?wait=true',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if(!msgRes.ok){const e=await msgRes.text();addLog('SYSTEM','system',`⚠️ Discord error ${msgRes.status}: ${e.substring(0,80)}`,'lc-red');return null;}
+        const d=await msgRes.json(); return d.id||null;
+      }
       return messageId;
     } else {
-      // Send new message, get back the message ID
-      const res = await fetch(url+'?wait=true',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(payload)
-      });
-      const data = await res.json();
-      return data.id || null;
+      const res=await fetch(url+'?wait=true',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      if(!res.ok){
+        const e=await res.text();
+        addLog('SYSTEM','system',`⚠️ Discord error ${res.status}: ${e.substring(0,80)}`,'lc-red');
+        return null;
+      }
+      const data=await res.json(); return data.id||null;
     }
-  }catch(e){console.warn('Webhook error',e); return null;}
+  }catch(e){
+    addLog('SYSTEM','system',`⚠️ Discord webhook failed: ${e.message}`,'lc-red');
+    return null;
+  }
 }
 
 async function sendWebhook(type, task, profile){
