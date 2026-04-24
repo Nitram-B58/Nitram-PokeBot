@@ -666,7 +666,9 @@ function clearTaskForm(){
 }
 function deleteTask(id){
   if(!confirm('Delete this task?'))return;
-  stopTask(id);tasks=tasks.filter(t=>t.id!==id);
+  stopTask(id);
+  delete taskMessageIds[id];
+  tasks=tasks.filter(t=>t.id!==id);
   renderTasks();updateCounts();save();
 }
 function startTask(id){
@@ -679,6 +681,7 @@ function startTask(id){
 function stopTask(id){
   const t=tasks.find(t=>t.id===id);if(!t)return;
   clearInterval(taskIntervals[id]);delete taskIntervals[id];
+  delete taskMessageIds[id];
   if(t.status==='running'||t.status==='carted'){
     t.status='idle';renderTasks();updateCounts();save();
     addLog(storeLabel(t.store),t.store,`Stopped monitoring "${t.name}"`,'lc-muted');
@@ -739,11 +742,13 @@ async function simulateCheck(id){
     }
 
     if(data.inStock){
-      // 2. In stock — attempt cart
-      t.status='carted';
-      addLog(storeLabel(t.store),t.store,`🛒 IN STOCK! Carting "${t.name}"...`,'lc-yellow');
-      sendWebhook('instock',t,null);
-      renderTasks();save();
+      // 2. In stock — attempt cart (only alert once)
+      if(t.status !== 'carted'){
+        t.status='carted';
+        addLog(storeLabel(t.store),t.store,`🛒 IN STOCK! Carting "${t.name}"...`,'lc-yellow');
+        sendWebhook('instock',t,null);
+        renderTasks();save();
+      }
 
       const cartRes = await fetch(`${PROXY}/cart?url=${encodeURIComponent(t.url)}&store=${t.store}`);
       const cartData = await cartRes.json();
@@ -850,13 +855,100 @@ function sendWebhook(type,task,profile){
 }
 
 // Send a status update to Discord every 100 checks on a task
-function maybeWebhookStatusUpdate(task){
+// Each task gets one Discord message, edited in place
+const taskMessageIds = {}; // taskId -> discord message id
+
+async function sendDiscord(url, payload, messageId=null){
+  try{
+    if(messageId){
+      // Edit existing message
+      const webhookId = url.split('/')[6];
+      const webhookToken = url.split('/')[7];
+      await fetch(`https://discord.com/api/webhooks/${webhookId}/${webhookToken}/messages/${messageId}`,{
+        method:'PATCH',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
+      return messageId;
+    } else {
+      // Send new message, get back the message ID
+      const res = await fetch(url+'?wait=true',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
+      const data = await res.json();
+      return data.id || null;
+    }
+  }catch(e){console.warn('Webhook error',e); return null;}
+}
+
+async function sendWebhook(type, task, profile){
+  if(!webhookConfig.url)return;
+  if(type==='instock'&&!webhookConfig.instock)return;
+  if(type==='checkout'&&!webhookConfig.checkout)return;
+  if(type==='error'&&!webhookConfig.error)return;
+
+  const colors={instock:16766720, checkout:52429, error:16729147};
+  const titles={instock:'🛒 Item In Stock — Attempting Checkout!', checkout:'✅ Checkout Success!', error:'❌ Task Error'};
+
+  const running=tasks.filter(t=>t.status==='running'||t.status==='carted');
+  const liveLines=running.length
+    ? running.map(t=>`• **${t.name}** on ${storeLabel(t.store)} — ${t.checks} checks`).join('\n')
+    : '_No tasks currently running_';
+
+  const checkoutDetails=(()=>{
+    if(type!=='checkout'||!profile) return '';
+    const last3=profile.card.num?profile.card.num.replace(/\s/g,'').slice(-3):'???';
+    const a=profile.addr;
+    return `\n\n**💳 Card:** ${profile.name} · ending \`${last3}\`\n**📦 Ship to:** ${a.addr1}${a.addr2?' '+a.addr2:''}, ${a.city}, ${a.state} ${a.zip}`;
+  })();
+
+  const descs={
+    instock:`Bot detected **${task.name}** in stock on **${storeLabel(task.store)}** and is attempting to purchase it now.\n\n**🤖 Currently Monitoring:**\n${liveLines}`,
+    checkout:`Successfully purchased **${task.name}** on **${storeLabel(task.store)}**.${checkoutDetails}\n\n**🤖 Still Monitoring:**\n${liveLines}`,
+    error:`Error on **${task.name}** at **${storeLabel(task.store)}** — retrying automatically.\n\n**🤖 Currently Monitoring:**\n${liveLines}`
+  };
+
+  const fields=[
+    {name:'🏪 Store',value:storeLabel(task.store),inline:true},
+    {name:'📦 Product',value:task.name,inline:true},
+    {name:'🔢 SKU',value:task.sku||'—',inline:true},
+    {name:'🔁 Total Checks',value:`${task.checks}`,inline:true},
+    {name:'⏱ Last Check',value:task.lastCheck||'—',inline:true},
+    {name:'👤 Profile',value:task.profileName||'No Profile',inline:true},
+    {name:'🔗 URL',value:task.url||'—',inline:false},
+  ];
+  if(type==='checkout'&&profile){
+    const last3=profile.card.num?profile.card.num.replace(/\s/g,'').slice(-3):'???';
+    const a=profile.addr;
+    fields.push({name:'💳 Card Used',value:`${profile.name} · ending \`${last3}\``,inline:true});
+    fields.push({name:'📬 Ship To',value:`${a.addr1}${a.addr2?' '+a.addr2:''}, ${a.city}, ${a.state} ${a.zip}`,inline:true});
+  }
+
+  const embed={
+    title:titles[type],
+    description:descs[type],
+    color:colors[type],
+    fields,
+    footer:{text:`NOVA AIO · ${tasks.length} task${tasks.length!==1?'s':''} · ${running.length} running`},
+    timestamp:new Date().toISOString()
+  };
+  if(task.imgData&&task.imgData.startsWith('http'))embed.thumbnail={url:task.imgData};
+
+  // Edit existing message if we have one, otherwise send new
+  const existingId = taskMessageIds[task.id];
+  const msgId = await sendDiscord(webhookConfig.url, {embeds:[embed]}, existingId||null);
+  if(msgId) taskMessageIds[task.id] = msgId;
+}
+
+async function maybeWebhookStatusUpdate(task){
   if(!webhookConfig.url||task.checks===0||task.checks%100!==0)return;
   const running=tasks.filter(t=>t.status==='running'||t.status==='carted');
   const liveLines=running.map(t=>`• **${t.name}** on ${storeLabel(t.store)} — ${t.checks} checks`).join('\n')||'_None_';
-  sendDiscord(webhookConfig.url,{embeds:[{
+  const embed={
     title:'📊 NOVA AIO — Status Update',
-    description:`**${task.name}** has now been checked **${task.checks} times** on ${storeLabel(task.store)} with no stock found yet.\n\n**🤖 All Running Tasks:**\n${liveLines}`,
+    description:`**${task.name}** has been checked **${task.checks} times** on ${storeLabel(task.store)} with no stock yet.\n\n**🤖 All Running Tasks:**\n${liveLines}`,
     color:7097343,
     fields:[
       {name:'🏪 Store',value:storeLabel(task.store),inline:true},
@@ -865,11 +957,10 @@ function maybeWebhookStatusUpdate(task){
     ],
     footer:{text:`NOVA AIO · Status update every 100 checks`},
     timestamp:new Date().toISOString()
-  }]});
-}
-async function sendDiscord(url,payload){
-  try{await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
-  catch(e){console.warn('Webhook error',e);}
+  };
+  const existingId = taskMessageIds[task.id];
+  const msgId = await sendDiscord(webhookConfig.url, {embeds:[embed]}, existingId||null);
+  if(msgId) taskMessageIds[task.id] = msgId;
 }
 
 // ===== RENDER TASKS =====
