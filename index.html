@@ -85,6 +85,7 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
 .badge-target{background:rgba(204,0,0,.14);color:#ff7070;border:1px solid rgba(204,0,0,.28);}
 .badge-walmart{background:rgba(0,113,206,.14);color:#5ba8e8;border:1px solid rgba(0,113,206,.28);}
 .badge-bestbuy{background:rgba(255,209,66,.1);color:var(--yellow);border:1px solid rgba(255,209,66,.22);}
+.badge-amazon{background:rgba(255,153,0,.12);color:#ff9900;border:1px solid rgba(255,153,0,.25);}
 .status-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:10px;font-weight:700;}
 .sb-running{background:rgba(0,229,160,.09);color:var(--green);border:1px solid rgba(0,229,160,.2);}
 .sb-idle{background:rgba(82,82,110,.12);color:var(--muted);border:1px solid var(--border);}
@@ -322,6 +323,7 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
           <option value="target">🎯 Fake Target</option>
           <option value="walmart">🛒 Fake Walmart</option>
           <option value="bestbuy">🖥 Fake Best Buy</option>
+          <option value="amazon">📦 Fake Amazon</option>
         </select>
       </div>
       <div class="form-group">
@@ -703,6 +705,7 @@ function simulateCheck(id){
   } else {
     if(t.status!=='running'){t.status='running';renderTasks();}
     if(t.checks%5===0)addLog(storeLabel(t.store),t.store,`🔍 Checking stock for "${t.name}" (check #${t.checks})`,'lc-muted');
+    maybeWebhookStatusUpdate(t);
   }
 }
 
@@ -731,22 +734,59 @@ function sendWebhook(type,task,profile){
   if(type==='instock'&&!webhookConfig.instock)return;
   if(type==='checkout'&&!webhookConfig.checkout)return;
   if(type==='error'&&!webhookConfig.error)return;
-  const colors={instock:16766720,checkout:52429,error:16729147};
-  const titles={instock:'🛒 Item In Stock!',checkout:'✅ Checkout Success!',error:'❌ Task Error'};
+  const colors={instock:16766720,checkout:52429,error:16729147,status:7097343};
+  const titles={instock:'🛒 Item In Stock — Attempting Checkout!',checkout:'✅ Checkout Success!',error:'❌ Task Error'};
+
+  // Build live tasks summary
+  const running=tasks.filter(t=>t.status==='running'||t.status==='carted');
+  const liveLines=running.length
+    ? running.map(t=>`• **${t.name}** on ${storeLabel(t.store)} — ${t.checks} checks`).join('\n')
+    : '_No tasks currently running_';
+
   const descs={
-    instock:`Bot is attempting to purchase **${task.name}** on ${storeLabel(task.store)}`,
-    checkout:`Successfully checked out **${task.name}** on ${storeLabel(task.store)}${profile?' for '+profile.name:''}`,
-    error:`Error on **${task.name}** at ${storeLabel(task.store)} — retrying...`
+    instock:`Bot detected **${task.name}** in stock on **${storeLabel(task.store)}** and is attempting to purchase it now.\n\n**🤖 Currently Monitoring:**\n${liveLines}`,
+    checkout:`Successfully purchased **${task.name}** on **${storeLabel(task.store)}**${profile?' for '+profile.name:''}.\n\n**🤖 Still Monitoring:**\n${liveLines}`,
+    error:`Error occurred while monitoring **${task.name}** on **${storeLabel(task.store)}** — bot will retry automatically.\n\n**🤖 Currently Monitoring:**\n${liveLines}`
   };
+
   const fields=[
-    {name:'Store',value:storeLabel(task.store),inline:true},
-    {name:'Product',value:task.name,inline:true},
-    {name:'SKU',value:task.sku||'—',inline:true},
-    {name:'URL',value:task.url||'—',inline:false},
+    {name:'🏪 Store',value:storeLabel(task.store),inline:true},
+    {name:'📦 Product',value:task.name,inline:true},
+    {name:'🔢 SKU',value:task.sku||'—',inline:true},
+    {name:'🔁 Total Checks',value:`${task.checks}`,inline:true},
+    {name:'⏱ Last Check',value:task.lastCheck||'—',inline:true},
+    {name:'👤 Profile',value:task.profileName||'No Profile',inline:true},
+    {name:'🔗 URL',value:task.url||'—',inline:false},
   ];
-  const embed={title:titles[type],description:descs[type],color:colors[type],fields,footer:{text:'NOVA AIO Bot'},timestamp:new Date().toISOString()};
+  const embed={
+    title:titles[type],
+    description:descs[type],
+    color:colors[type],
+    fields,
+    footer:{text:`NOVA AIO · ${tasks.length} total task${tasks.length!==1?'s':''} · ${running.length} running`},
+    timestamp:new Date().toISOString()
+  };
   if(task.imgData&&task.imgData.startsWith('http'))embed.thumbnail={url:task.imgData};
   sendDiscord(webhookConfig.url,{embeds:[embed]});
+}
+
+// Send a status update to Discord every 100 checks on a task
+function maybeWebhookStatusUpdate(task){
+  if(!webhookConfig.url||task.checks===0||task.checks%100!==0)return;
+  const running=tasks.filter(t=>t.status==='running'||t.status==='carted');
+  const liveLines=running.map(t=>`• **${t.name}** on ${storeLabel(t.store)} — ${t.checks} checks`).join('\n')||'_None_';
+  sendDiscord(webhookConfig.url,{embeds:[{
+    title:'📊 NOVA AIO — Status Update',
+    description:`**${task.name}** has now been checked **${task.checks} times** on ${storeLabel(task.store)} with no stock found yet.\n\n**🤖 All Running Tasks:**\n${liveLines}`,
+    color:7097343,
+    fields:[
+      {name:'🏪 Store',value:storeLabel(task.store),inline:true},
+      {name:'🔁 Checks',value:`${task.checks}`,inline:true},
+      {name:'⏱ Last Check',value:task.lastCheck||'—',inline:true},
+    ],
+    footer:{text:`NOVA AIO · Status update every 100 checks`},
+    timestamp:new Date().toISOString()
+  }]});
 }
 async function sendDiscord(url,payload){
   try{await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
@@ -785,10 +825,10 @@ function buildTaskTable(){
       </td>
     </tr>`).join('')}</tbody></table>`;
 }
-function storeBadge(s){const m={target:['badge-target','🎯 Target'],walmart:['badge-walmart','🛒 Walmart'],bestbuy:['badge-bestbuy','🖥 Best Buy']};const[c,l]=m[s]||['','?'];return `<span class="badge ${c}">${l}</span>`;}
+function storeBadge(s){const m={target:['badge-target','🎯 Target'],walmart:['badge-walmart','🛒 Walmart'],bestbuy:['badge-bestbuy','🖥 Best Buy'],amazon:['badge-amazon','📦 Amazon']};const[c,l]=m[s]||['','?'];return `<span class="badge ${c}">${l}</span>`;}
 function statusBadge(s){const m={idle:['sb-idle','','Idle'],running:['sb-running','anim','Running'],carted:['sb-carted','anim','Carted'],checkout:['sb-checkout','','Checked Out'],error:['sb-error','','Error']};const[c,a,l]=m[s]||m.idle;return `<span class="status-badge ${c}"><span class="sd ${a}"></span>${l}</span>`;}
-function storeLabel(s){return s==='target'?'TARGET':s==='walmart'?'WALMART':'BESTBUY';}
-function storeCls(s){return s==='target'?'lc-red':s==='walmart'?'lc-blue':s==='bestbuy'?'lc-yellow':'lc-muted';}
+function storeLabel(s){return s==='target'?'TARGET':s==='walmart'?'WALMART':s==='bestbuy'?'BESTBUY':'AMAZON';}
+function storeCls(s){return s==='target'?'lc-red':s==='walmart'?'lc-blue':s==='bestbuy'?'lc-yellow':s==='amazon'?'lc-green':'lc-muted';}
 function emptyState(i,t,s){return `<div class="empty"><div class="empty-ico">${i}</div><div class="empty-t">${t}</div><div class="empty-s">${s}</div></div>`;}
 
 // ===== LOG =====
@@ -870,8 +910,10 @@ function fillAddress(idx){
   if(!r)return;
   const a=r.address;
   const street=[a.house_number,a.road].filter(Boolean).join(' ')||r.display_name.split(',')[0];
+  // Use suburb/neighbourhood/quarter first so "Woodland Hills" beats "Los Angeles"
+  const city=a.suburb||a.neighbourhood||a.quarter||a.village||a.town||a.city||a.county||'';
   document.getElementById('p-addr1').value=street;
-  document.getElementById('p-city').value=a.city||a.town||a.village||a.county||'';
+  document.getElementById('p-city').value=city;
   document.getElementById('p-state').value=a.state_code||a.state||'';
   document.getElementById('p-zip').value=a.postcode||'';
   document.getElementById('p-country').value=(a.country_code||'us').toUpperCase()==='CA'?'CA':'US';
