@@ -285,7 +285,17 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
         </div>
       </div>
       <div class="settings-card">
-        <div class="settings-title">💾 Data & Storage</div>
+        <div class="settings-title">🔌 Proxy Server</div>
+        <div class="settings-desc">The proxy server runs on your computer and does the real stock checking. Keep START.bat running while using the bot.</div>
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;line-height:2;">
+          Address: <span style="color:var(--accent)">localhost:7842</span><br>
+          Auto-checks every 10 seconds
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <button class="btn btn-ghost btn-sm" onclick="checkProxy()">🔄 Check Connection</button>
+          <div id="proxy-status" class="webhook-status ws-none">🔴 Proxy Offline</div>
+        </div>
+      </div>
         <div class="settings-desc">All data is auto-saved in your browser and persists across sessions — even if you close the tab and come back weeks later.</div>
         <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;line-height:2;">
           Tasks: <span id="s-tasks" style="color:var(--accent)">0</span> &nbsp;·&nbsp;
@@ -677,35 +687,90 @@ function stopTask(id){
 function startAll(){tasks.forEach(t=>{if(t.status==='idle')startTask(t.id);});}
 function stopAll(){tasks.forEach(t=>stopTask(t.id));}
 
-function simulateCheck(id){
-  const t=tasks.find(t=>t.id===id);if(!t)return;
-  t.checks++;t.lastCheck=new Date().toLocaleTimeString();
-  const roll=Math.random();
-  if(roll<0.06){
-    t.status='checkout';stats.checkouts++;
-    clearInterval(taskIntervals[id]);delete taskIntervals[id];
-    const prof=profiles.find(p=>p.id==t.profileId);
-    addLog(storeLabel(t.store),t.store,`✅ CHECKOUT SUCCESS — "${t.name}" | ${prof?prof.name:'No Profile'}`,'lc-green');
-    showToast('Checkout Success!',`${t.name} · ${storeLabel(t.store)}`);
-    sendWebhook('checkout',t,prof);
-    renderTasks();updateCounts();save();
-  } else if(roll<0.09){
-    t.status='error';stats.errors++;
-    clearInterval(taskIntervals[id]);delete taskIntervals[id];
-    addLog(storeLabel(t.store),t.store,`❌ Error on "${t.name}" — retrying in 3s...`,'lc-red');
-    sendWebhook('error',t,null);
-    renderTasks();updateCounts();save();
-    setTimeout(()=>{t.status='idle';startTask(t.id);},3000);
-  } else if(roll<0.18){
-    t.status='carted';
-    addLog(storeLabel(t.store),t.store,`🛒 In Stock! Carting "${t.name}" — processing checkout...`,'lc-yellow');
-    sendWebhook('instock',t,null);
-    renderTasks();save();
-    setTimeout(()=>simulateCheck(id),1500);
-  } else {
+const PROXY = 'http://localhost:7842';
+let proxyOnline = false;
+
+async function checkProxy(){
+  try{
+    const r = await fetch(`${PROXY}/ping`);
+    const d = await r.json();
+    proxyOnline = d.status === 'ok';
+  } catch(e){ proxyOnline = false; }
+  updateProxyStatus();
+}
+
+function updateProxyStatus(){
+  const el = document.getElementById('proxy-status');
+  if(!el) return;
+  el.className = 'webhook-status ' + (proxyOnline ? 'ws-ok' : 'ws-none');
+  el.textContent = proxyOnline ? '🟢 Proxy Online' : '🔴 Proxy Offline — run START.bat';
+}
+
+async function simulateCheck(id){
+  const t = tasks.find(t=>t.id===id); if(!t) return;
+  t.checks++;
+  t.lastCheck = new Date().toLocaleTimeString();
+
+  if(!proxyOnline){
+    // fallback: re-check proxy connection
+    await checkProxy();
+    if(!proxyOnline){
+      if(t.checks===1) addLog(storeLabel(t.store),t.store,`⚠️ Proxy offline — start START.bat to enable real checking`,'lc-red');
+      if(t.status!=='running'){t.status='running';renderTasks();}
+      maybeWebhookStatusUpdate(t);
+      return;
+    }
+  }
+
+  try{
+    // 1. Check stock
+    addLog(storeLabel(t.store),t.store,`🔍 Checking stock for "${t.name}" (check #${t.checks})`,'lc-muted');
+    const res = await fetch(`${PROXY}/check?url=${encodeURIComponent(t.url)}`);
+    const data = await res.json();
+
+    if(data.error){
+      t.status='error'; stats.errors++;
+      clearInterval(taskIntervals[id]); delete taskIntervals[id];
+      addLog(storeLabel(t.store),t.store,`❌ Error checking "${t.name}": ${data.error}`,'lc-red');
+      sendWebhook('error',t,null);
+      renderTasks();updateCounts();save();
+      setTimeout(()=>{t.status='idle';startTask(t.id);},5000);
+      return;
+    }
+
+    if(data.inStock){
+      // 2. In stock — attempt cart
+      t.status='carted';
+      addLog(storeLabel(t.store),t.store,`🛒 IN STOCK! Carting "${t.name}"...`,'lc-yellow');
+      sendWebhook('instock',t,null);
+      renderTasks();save();
+
+      const cartRes = await fetch(`${PROXY}/cart?url=${encodeURIComponent(t.url)}&store=${t.store}`);
+      const cartData = await cartRes.json();
+
+      if(cartData.success){
+        t.status='checkout'; stats.checkouts++;
+        clearInterval(taskIntervals[id]); delete taskIntervals[id];
+        const prof = profiles.find(p=>p.id==t.profileId);
+        addLog(storeLabel(t.store),t.store,`✅ CHECKOUT SUCCESS — "${t.name}" | ${prof?prof.name:'No Profile'}`,'lc-green');
+        showToast('Checkout Success!',`${t.name} · ${storeLabel(t.store)}`);
+        sendWebhook('checkout',t,prof);
+        renderTasks();updateCounts();save();
+      } else {
+        t.status='running';
+        addLog(storeLabel(t.store),t.store,`⚠️ In stock but cart failed: ${cartData.reason||cartData.error||'unknown'}`,'lc-yellow');
+        renderTasks();save();
+      }
+    } else {
+      // Out of stock
+      if(t.status!=='running'){t.status='running';renderTasks();}
+      if(t.checks%10===0) addLog(storeLabel(t.store),t.store,`⏳ Still out of stock: "${t.name}" (${t.checks} checks)`,'lc-muted');
+      maybeWebhookStatusUpdate(t);
+    }
+  } catch(e){
+    proxyOnline=false; updateProxyStatus();
+    addLog(storeLabel(t.store),t.store,`❌ Proxy connection lost: ${e.message}`,'lc-red');
     if(t.status!=='running'){t.status='running';renderTasks();}
-    if(t.checks%5===0)addLog(storeLabel(t.store),t.store,`🔍 Checking stock for "${t.name}" (check #${t.checks})`,'lc-muted');
-    maybeWebhookStatusUpdate(t);
   }
 }
 
@@ -745,7 +810,15 @@ function sendWebhook(type,task,profile){
 
   const descs={
     instock:`Bot detected **${task.name}** in stock on **${storeLabel(task.store)}** and is attempting to purchase it now.\n\n**🤖 Currently Monitoring:**\n${liveLines}`,
-    checkout:`Successfully purchased **${task.name}** on **${storeLabel(task.store)}**${profile?' for '+profile.name:''}.\n\n**🤖 Still Monitoring:**\n${liveLines}`,
+    checkout:(()=>{
+      let details='';
+      if(profile){
+        const last3=profile.card.num?profile.card.num.replace(/\s/g,'').slice(-3):'???';
+        const a=profile.addr;
+        details=`\n\n**💳 Card:** ${profile.name} · ending \`${last3}\`\n**📦 Ship to:** ${a.addr1}${a.addr2?' '+a.addr2:''}, ${a.city}, ${a.state} ${a.zip}`;
+      }
+      return `Successfully purchased **${task.name}** on **${storeLabel(task.store)}**.${details}\n\n**🤖 Still Monitoring:**\n${liveLines}`;
+    })(),
     error:`Error occurred while monitoring **${task.name}** on **${storeLabel(task.store)}** — bot will retry automatically.\n\n**🤖 Currently Monitoring:**\n${liveLines}`
   };
 
@@ -758,6 +831,12 @@ function sendWebhook(type,task,profile){
     {name:'👤 Profile',value:task.profileName||'No Profile',inline:true},
     {name:'🔗 URL',value:task.url||'—',inline:false},
   ];
+  if(type==='checkout'&&profile){
+    const last3=profile.card.num?profile.card.num.replace(/\s/g,'').slice(-3):'???';
+    const a=profile.addr;
+    fields.push({name:'💳 Card Used',value:`${profile.name} · ending \`${last3}\``,inline:true});
+    fields.push({name:'📬 Ship To',value:`${a.addr1}${a.addr2?' '+a.addr2:''}, ${a.city}, ${a.state} ${a.zip}`,inline:true});
+  }
   const embed={
     title:titles[type],
     description:descs[type],
@@ -930,6 +1009,8 @@ document.addEventListener('click',e=>{
 // ===== INIT =====
 load();renderTasks();renderProfiles();renderLogs();updateCounts();
 if(!logs.length)addLog('SYSTEM','system','NOVA AIO initialized — ready to monitor','lc-blue');
+checkProxy();
+setInterval(checkProxy, 10000);
 </script>
 </body>
 </html>
