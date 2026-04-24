@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NOVA AIO">
+<meta name="theme-color" content="#080810">
+<meta name="mobile-web-app-capable" content="yes">
 <title>NOVA AIO</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -183,6 +188,68 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
 /* SECTION */
 .section{display:none;}
 .section.active{display:block;}
+
+/* ===== MOBILE RESPONSIVE ===== */
+@media(max-width:768px){
+  /* Hide sidebar, show bottom nav instead */
+  .sidebar{display:none;}
+  .main{margin-left:0;padding:16px;padding-bottom:80px;height:auto;overflow-y:auto;}
+
+  /* Bottom nav bar */
+  .mobile-nav{display:flex;}
+
+  /* Stats stack 2x2 */
+  .stats-grid{grid-template-columns:1fr 1fr;gap:10px;}
+  .stat-val{font-size:22px;}
+
+  /* Settings stack single column */
+  .settings-grid{grid-template-columns:1fr;}
+
+  /* Table scrolls horizontally */
+  .card{overflow-x:auto;}
+  table{min-width:600px;}
+
+  /* Page head stacks */
+  .page-head{flex-direction:column;align-items:flex-start;gap:12px;}
+  .head-actions{width:100%;display:flex;flex-wrap:wrap;gap:8px;}
+  .head-actions .btn{flex:1;text-align:center;}
+
+  /* Modals full screen on mobile */
+  .modal{width:100%!important;max-width:100%!important;border-radius:16px 16px 0 0;position:fixed;bottom:0;left:0;right:0;max-height:92vh;padding:24px 20px;}
+  .overlay{align-items:flex-end;}
+
+  /* Form rows stack */
+  .form-row{grid-template-columns:1fr;}
+  .form-row-3{grid-template-columns:1fr 1fr;}
+
+  /* Toast full width */
+  .toast{left:12px;right:12px;min-width:unset;top:12px;}
+
+  /* Profiles stack */
+  .profiles-grid{grid-template-columns:1fr;padding:12px;}
+
+  /* Test panel grid stack */
+  div[style*="grid-template-columns:1fr 1fr 1fr"]{display:flex!important;flex-direction:column!important;}
+}
+
+/* Mobile bottom nav - hidden on desktop */
+.mobile-nav{
+  display:none;
+  position:fixed;bottom:0;left:0;right:0;z-index:50;
+  background:var(--surface);border-top:1px solid var(--border);
+  padding:8px 0 max(8px, env(safe-area-inset-bottom));
+}
+.mob-nav-items{display:flex;justify-content:space-around;align-items:center;}
+.mob-nav-item{display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 16px;cursor:pointer;border-radius:10px;transition:all .18s;color:var(--muted);min-width:60px;}
+.mob-nav-item.active{color:var(--accent);}
+.mob-nav-item .mob-ico{font-size:20px;}
+.mob-nav-item .mob-lbl{font-size:9px;font-weight:700;letter-spacing:.5px;}
+.mob-logo{display:none;}
+@media(max-width:768px){
+  .mob-logo{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:4px 0;}
+  .mob-logo-text{font-size:18px;font-weight:800;letter-spacing:3px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+  .mob-online{display:flex;align-items:center;gap:6px;background:rgba(0,229,160,.07);border:1px solid rgba(0,229,160,.18);border-radius:20px;padding:5px 10px;font-size:10px;font-weight:700;color:var(--green);}
+}
 </style>
 </head>
 <body>
@@ -207,15 +274,30 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
   </div>
 </nav>
 
+<!-- MOBILE BOTTOM NAV -->
+<nav class="mobile-nav">
+  <div class="mob-nav-items">
+    <div class="mob-nav-item active" onclick="showSection('dashboard',this)"><span class="mob-ico">⚡</span><span class="mob-lbl">Home</span></div>
+    <div class="mob-nav-item" onclick="showSection('tasks',this)"><span class="mob-ico">🎯</span><span class="mob-lbl">Tasks</span></div>
+    <div class="mob-nav-item" onclick="showSection('profiles',this)"><span class="mob-ico">👤</span><span class="mob-lbl">Profiles</span></div>
+    <div class="mob-nav-item" onclick="showSection('settings',this)"><span class="mob-ico">⚙️</span><span class="mob-lbl">Settings</span></div>
+    <div class="mob-nav-item" onclick="showSection('activity',this)"><span class="mob-ico">📋</span><span class="mob-lbl">Log</span></div>
+  </div>
+</nav>
+
 <div class="main">
 
   <!-- DASHBOARD -->
   <div id="sec-dashboard" class="section active">
+    <div class="mob-logo">
+      <div class="mob-logo-text">NOVA AIO</div>
+      <div class="mob-online"><div class="pulse-dot"></div> Online</div>
+    </div>
     <div class="page-head">
       <div class="page-title">Dashboard</div>
       <div class="head-actions">
-        <button class="btn btn-ghost btn-sm" onclick="startAll()">▶ Start All</button>
-        <button class="btn btn-red btn-sm" onclick="stopAll()">■ Stop All</button>
+        <button class="btn btn-ghost btn-sm admin-only" onclick="startAll()">▶ Start All</button>
+        <button class="btn btn-red btn-sm admin-only" onclick="stopAll()">■ Stop All</button>
       </div>
     </div>
     <div class="stats-grid">
@@ -239,8 +321,8 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
     <div class="page-head">
       <div class="page-title">Tasks</div>
       <div class="head-actions">
-        <button class="btn btn-ghost btn-sm" onclick="startAll()">▶ Start All</button>
-        <button class="btn btn-ghost btn-sm" onclick="stopAll()">■ Stop All</button>
+        <button class="btn btn-ghost btn-sm admin-only" onclick="startAll()">▶ Start All</button>
+        <button class="btn btn-ghost btn-sm admin-only" onclick="stopAll()">■ Stop All</button>
         <button class="btn btn-primary" onclick="openTaskModal()">+ New Task</button>
       </div>
     </div>
@@ -284,7 +366,7 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
           <div id="wh-status" class="webhook-status ws-none">⚪ Not configured</div>
         </div>
       </div>
-      <div class="settings-card">
+      <div class="settings-card admin-only">
         <div class="settings-title">🔌 Proxy Server</div>
         <div class="settings-desc">The proxy server runs on your computer and does the real stock checking. Keep START.bat running while using the bot.</div>
         <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;line-height:2;">
@@ -296,7 +378,7 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
           <div id="proxy-status" class="webhook-status ws-none">🔴 Proxy Offline</div>
         </div>
       </div>
-      <div class="settings-card">
+      <div class="settings-card admin-only">
         <div class="settings-title">💾 Data & Storage</div>
         <div class="settings-desc">All data is auto-saved in your browser and persists across sessions — even if you close the tab and come back weeks later.</div>
         <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;line-height:2;">
@@ -309,7 +391,7 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
     </div>
 
     <!-- TEST PANEL -->
-    <div class="settings-card" style="margin-top:16px;">
+    <div class="settings-card admin-only" style="margin-top:16px;">
       <div class="settings-title">🧪 Test Panel</div>
       <div class="settings-desc">Fire fake scenarios on a real task to test the full flow — Discord webhook, activity log, status updates — without waiting for actual stock.</div>
       <div class="form-group">
@@ -517,7 +599,13 @@ function load(){
 function showSection(name,el){
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
   document.getElementById('sec-'+name).classList.add('active');
-  if(el){document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));el.classList.add('active');}
+  // Sync both sidebar and mobile nav
+  document.querySelectorAll('.nav-item,.mob-nav-item').forEach(n=>n.classList.remove('active'));
+  if(el) el.classList.add('active');
+  // Also activate the matching mobile nav item
+  document.querySelectorAll('.mob-nav-item').forEach(n=>{
+    if(n.getAttribute('onclick')&&n.getAttribute('onclick').includes("'"+name+"'")) n.classList.add('active');
+  });
   if(name==='settings')updateSettingsStats();
 }
 
@@ -1193,7 +1281,7 @@ document.addEventListener('click',e=>{
 load();renderTasks();renderProfiles();renderLogs();updateCounts();
 if(!logs.length)addLog('SYSTEM','system','NOVA AIO initialized — ready to monitor','lc-blue');
 checkProxy();
-setInterval(checkProxy, 10000);
+setInterval(checkProxy,10000);
 </script>
 </body>
 </html>
