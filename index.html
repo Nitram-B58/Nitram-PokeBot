@@ -432,6 +432,47 @@ td{padding:12px 22px;font-size:12px;vertical-align:middle;}
       <div class="card-head"><div class="card-title">Monitored Cards</div><span class="card-sub" id="poke-lbl">0 cards</span></div>
       <div id="poke-table-wrap"></div>
     </div>
+
+    <!-- In-Store Checker -->
+    <div class="card" style="margin-top:18px;">
+      <div class="card-head">
+        <div class="card-title">🏪 Target In-Store Checker</div>
+        <span class="card-sub">Check nearby stores by ZIP</span>
+      </div>
+      <div style="padding:18px 22px;">
+        <div class="form-row" style="margin-bottom:14px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">TCIN (Target Product ID)</label>
+            <input class="form-input" id="is-tcin" placeholder="e.g. 94300066" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">ZIP Code</label>
+            <input class="form-input" id="is-zip" placeholder="e.g. 91364" maxlength="5" />
+          </div>
+        </div>
+        <div class="form-row" style="margin-bottom:14px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">Search Radius (miles)</label>
+            <select class="form-select" id="is-radius">
+              <option value="10">10 miles</option>
+              <option value="25" selected>25 miles</option>
+              <option value="50">50 miles</option>
+              <option value="100">100 miles</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">Discord Webhook (optional)</label>
+            <input class="form-input" id="is-webhook" placeholder="Uses Poke webhook if empty" />
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-primary" onclick="checkInStore()">🔍 Check Now</button>
+          <button class="btn btn-ghost" id="is-monitor-btn" onclick="toggleInStoreMonitor()">▶ Start Monitor</button>
+          <span id="is-status" style="font-family:var(--font-mono);font-size:11px;color:var(--muted);align-self:center;"></span>
+        </div>
+        <div id="is-results" style="margin-top:16px;"></div>
+      </div>
+    </div>
   </div>
 
   <!-- ACTIVITY -->
@@ -1573,7 +1614,129 @@ function renderPoke(){
     </tr>`).join('')}</tbody></table>`;
 }
 
-// ===== INIT =====
+// ===== IN-STORE CHECKER =====
+let isMonitorInterval = null;
+let isMonitoring = false;
+let isLastStoreStock = {}; // storeId -> qty
+
+async function checkInStore(){
+  const tcin = document.getElementById('is-tcin').value.trim();
+  const zip = document.getElementById('is-zip').value.trim();
+  const radius = document.getElementById('is-radius').value;
+  if(!tcin || !zip){ alert('Enter a TCIN and ZIP code.'); return; }
+
+  const status = document.getElementById('is-status');
+  const results = document.getElementById('is-results');
+  status.textContent = 'Checking...';
+  status.style.color = 'var(--yellow)';
+  results.innerHTML = '';
+
+  try{
+    // Step 1: get nearby store IDs from Target's store locator API
+    const storeRes = await fetch(`https://api.target.com/v3/stores/nearby?place=${zip}&within=${radius}&unit=mile&key=ff457966e64d5e877fdbad070f276d18ecec4a01`);
+    const storeData = await storeRes.json();
+    const stores = storeData.nearby_stores?.stores || [];
+
+    if(!stores.length){
+      status.textContent = 'No stores found near that ZIP.';
+      status.style.color = 'var(--red)';
+      return;
+    }
+
+    const storeIds = stores.slice(0,20).map(s=>s.store_id).join(',');
+    const storeMap = {};
+    stores.forEach(s=>storeMap[s.store_id]={name:s.store_name, city:s.city, state:s.state, distance:s.distance});
+
+    // Step 2: check in-store inventory for each location
+    const invRes = await fetch(`https://api.target.com/fulfillment/v4/readiness?key=ff457966e64d5e877fdbad070f276d18ecec4a01&tcins=${tcin}&store_ids=${storeIds}&zip=${zip}&state=CA&latitude=0&longitude=0&radius=${radius}&requested_quantity=1&channel=WEB&page=%2Fp%2FA-${tcin}`);
+    const invData = await invRes.json();
+
+    const products = invData.products || [];
+    const product = products.find(p=>p.tcin===tcin)||products[0];
+    if(!product){ status.textContent = 'Product not found.'; status.style.color='var(--red)'; return; }
+
+    const locations = product.available_to_promise_network?.available_to_promise || [];
+    const storeResults = locations.map(loc=>{
+      const info = storeMap[loc.store_id]||{name:'Store '+loc.store_id,city:'',state:''};
+      const qty = loc.quantity_on_hand || 0;
+      return { storeId:loc.store_id, name:info.name, city:info.city, state:info.state, distance:info.distance, qty };
+    }).sort((a,b)=>a.distance-b.distance);
+
+    const inStock = storeResults.filter(s=>s.qty>0);
+    const oos = storeResults.filter(s=>s.qty===0);
+
+    status.textContent = `${inStock.length} stores in stock · ${oos.length} OOS · ${storeResults.length} checked`;
+    status.style.color = inStock.length ? 'var(--green)' : 'var(--muted)';
+
+    // Render results
+    results.innerHTML = `
+      <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-bottom:10px;">TCIN ${tcin} · ${storeResults.length} stores checked near ${zip}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;">
+        ${storeResults.map(s=>`
+          <div style="background:${s.qty>0?'rgba(0,229,160,.06)':'var(--surface2)'};border:1px solid ${s.qty>0?'rgba(0,229,160,.2)':'var(--border)'};border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div style="font-size:12px;font-weight:700;color:var(--text)">${s.name}</div>
+              <div style="font-size:10px;color:var(--muted)">${s.city}, ${s.state}${s.distance?' · '+parseFloat(s.distance).toFixed(1)+'mi':''}</div>
+            </div>
+            <div style="font-size:11px;font-weight:800;color:${s.qty>0?'var(--green)':'var(--red)'}">
+              ${s.qty>0?`[${s.qty}]`:'[0]'}
+            </div>
+          </div>`).join('')}
+      </div>`;
+
+    // Send Discord alert if any in stock
+    if(inStock.length > 0){
+      const wh = document.getElementById('is-webhook').value.trim() || pokeWebhookUrl;
+      if(wh){
+        const storeLines = inStock.map(s=>`• **${s.name}** — ${s.city}, ${s.state} · \`[${s.qty}]\``).join('\n');
+        await sendPokeDiscord(wh, {embeds:[{
+          title:`🏪 In-Store Stock Found! TCIN ${tcin}`,
+          description:`Found **${inStock.length} store${inStock.length!==1?'s':''}** with stock near **${zip}**:\n\n${storeLines}`,
+          color:0x00e5a0,
+          fields:[
+            {name:'🔢 TCIN', value:tcin, inline:true},
+            {name:'📍 ZIP', value:zip, inline:true},
+            {name:'🏪 Stores w/ Stock', value:`${inStock.length}`, inline:true},
+          ],
+          footer:{text:'NOVA AIO · Target In-Store Checker'},
+          timestamp:new Date().toISOString()
+        }]}, null, null);
+      }
+    }
+
+    // Update last known stock for monitor
+    storeResults.forEach(s=>{ isLastStoreStock[s.storeId] = s.qty; });
+    addLog('POKE','system',`In-store check: ${inStock.length}/${storeResults.length} stores in stock for TCIN ${tcin}`,'lc-green');
+
+  }catch(e){
+    status.textContent = `Error: ${e.message}`;
+    status.style.color = 'var(--red)';
+    addLog('POKE','system',`❌ In-store check failed: ${e.message}`,'lc-red');
+  }
+}
+
+function toggleInStoreMonitor(){
+  const btn = document.getElementById('is-monitor-btn');
+  if(isMonitoring){
+    clearInterval(isMonitorInterval);
+    isMonitorInterval = null;
+    isMonitoring = false;
+    btn.textContent = '▶ Start Monitor';
+    btn.className = 'btn btn-ghost';
+    document.getElementById('is-status').textContent = 'Monitor stopped';
+    addLog('POKE','system','In-store monitor stopped','lc-muted');
+  } else {
+    const tcin = document.getElementById('is-tcin').value.trim();
+    const zip = document.getElementById('is-zip').value.trim();
+    if(!tcin||!zip){ alert('Enter a TCIN and ZIP first.'); return; }
+    isMonitoring = true;
+    btn.textContent = '■ Stop Monitor';
+    btn.className = 'btn btn-red';
+    addLog('POKE','system',`In-store monitor started for TCIN ${tcin} near ${zip}`,'lc-green');
+    checkInStore(); // run immediately
+    isMonitorInterval = setInterval(checkInStore, 60000); // check every 60s
+  }
+}
 load(); loadPokeData();
 renderTasks(); renderProfiles(); renderPoke(); renderLogs(); updateCounts();
 if(!logs.length)addLog('SYSTEM','system','NOVA AIO initialized — ready to monitor','lc-blue');
