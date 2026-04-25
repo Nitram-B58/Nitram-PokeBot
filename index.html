@@ -1632,43 +1632,24 @@ async function checkInStore(){
   results.innerHTML = '';
 
   try{
-    // Step 1: get nearby store IDs from Target's store locator API
-    const storeRes = await fetch(`https://api.target.com/v3/stores/nearby?place=${zip}&within=${radius}&unit=mile&key=ff457966e64d5e877fdbad070f276d18ecec4a01`);
-    const storeData = await storeRes.json();
-    const stores = storeData.nearby_stores?.stores || [];
+    if(!proxyOnline){ await checkProxy(); if(!proxyOnline){ status.textContent='⚠️ Proxy offline — start START.bat first'; status.style.color='var(--red)'; return; } }
 
-    if(!stores.length){
-      status.textContent = 'No stores found near that ZIP.';
+    const res = await fetch(`${PROXY}/instore?tcin=${tcin}&zip=${zip}&radius=${radius}`);
+    const data = await res.json();
+
+    if(data.error && !data.stores?.length){
+      status.textContent = `Error: ${data.error}`;
       status.style.color = 'var(--red)';
       return;
     }
 
-    const storeIds = stores.slice(0,20).map(s=>s.store_id).join(',');
-    const storeMap = {};
-    stores.forEach(s=>storeMap[s.store_id]={name:s.store_name, city:s.city, state:s.state, distance:s.distance});
-
-    // Step 2: check in-store inventory for each location
-    const invRes = await fetch(`https://api.target.com/fulfillment/v4/readiness?key=ff457966e64d5e877fdbad070f276d18ecec4a01&tcins=${tcin}&store_ids=${storeIds}&zip=${zip}&state=CA&latitude=0&longitude=0&radius=${radius}&requested_quantity=1&channel=WEB&page=%2Fp%2FA-${tcin}`);
-    const invData = await invRes.json();
-
-    const products = invData.products || [];
-    const product = products.find(p=>p.tcin===tcin)||products[0];
-    if(!product){ status.textContent = 'Product not found.'; status.style.color='var(--red)'; return; }
-
-    const locations = product.available_to_promise_network?.available_to_promise || [];
-    const storeResults = locations.map(loc=>{
-      const info = storeMap[loc.store_id]||{name:'Store '+loc.store_id,city:'',state:''};
-      const qty = loc.quantity_on_hand || 0;
-      return { storeId:loc.store_id, name:info.name, city:info.city, state:info.state, distance:info.distance, qty };
-    }).sort((a,b)=>a.distance-b.distance);
-
+    const storeResults = data.stores || [];
     const inStock = storeResults.filter(s=>s.qty>0);
     const oos = storeResults.filter(s=>s.qty===0);
 
     status.textContent = `${inStock.length} stores in stock · ${oos.length} OOS · ${storeResults.length} checked`;
     status.style.color = inStock.length ? 'var(--green)' : 'var(--muted)';
 
-    // Render results
     results.innerHTML = `
       <div style="font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-bottom:10px;">TCIN ${tcin} · ${storeResults.length} stores checked near ${zip}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;">
@@ -1684,29 +1665,22 @@ async function checkInStore(){
           </div>`).join('')}
       </div>`;
 
-    // Send Discord alert if any in stock
     if(inStock.length > 0){
       const wh = document.getElementById('is-webhook').value.trim() || pokeWebhookUrl;
       if(wh){
         const storeLines = inStock.map(s=>`• **${s.name}** — ${s.city}, ${s.state} · \`[${s.qty}]\``).join('\n');
-        await sendPokeDiscord(wh, {embeds:[{
+        await sendPokeDiscord(wh,{embeds:[{
           title:`🏪 In-Store Stock Found! TCIN ${tcin}`,
           description:`Found **${inStock.length} store${inStock.length!==1?'s':''}** with stock near **${zip}**:\n\n${storeLines}`,
           color:0x00e5a0,
-          fields:[
-            {name:'🔢 TCIN', value:tcin, inline:true},
-            {name:'📍 ZIP', value:zip, inline:true},
-            {name:'🏪 Stores w/ Stock', value:`${inStock.length}`, inline:true},
-          ],
+          fields:[{name:'🔢 TCIN',value:tcin,inline:true},{name:'📍 ZIP',value:zip,inline:true},{name:'🏪 In Stock',value:`${inStock.length}`,inline:true}],
           footer:{text:'NOVA AIO · Target In-Store Checker'},
           timestamp:new Date().toISOString()
-        }]}, null, null);
+        }]},null,null);
       }
     }
-
-    // Update last known stock for monitor
-    storeResults.forEach(s=>{ isLastStoreStock[s.storeId] = s.qty; });
-    addLog('POKE','system',`In-store check: ${inStock.length}/${storeResults.length} stores in stock for TCIN ${tcin}`,'lc-green');
+    storeResults.forEach(s=>{ isLastStoreStock[s.storeId]=s.qty; });
+    addLog('POKE','system',`In-store: ${inStock.length}/${storeResults.length} stores in stock for TCIN ${tcin}`,'lc-green');
 
   }catch(e){
     status.textContent = `Error: ${e.message}`;
